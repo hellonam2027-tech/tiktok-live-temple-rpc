@@ -22,11 +22,19 @@ class TempleAudioEngine {
 
     this.useSynthMusicFallback = false;
     this.synthBgTimer = null;
-    this.bgAudio = new Audio('/assets/bg_chant.m4a');
+    // Nhạc nền: ưu tiên bg_chant.mp3, nếu không có thì thử bg_chant.m4a
+    this.bgAudio = new Audio('/assets/bg_chant.mp3');
+    this.bgTriedM4a = false;
     this.bgAudio.loop = true;
     this.bgAudio.preload = 'auto';
     this.bgAudio.volume = this.bgBaseVolume;
     this.bgAudio.onerror = () => {
+      if (!this.bgTriedM4a) {
+        this.bgTriedM4a = true;
+        this.bgAudio.src = '/assets/bg_chant.m4a';
+        this.bgAudio.load();
+        return;
+      }
       this.useSynthMusicFallback = true;
     };
     this.ttsQueue = [];
