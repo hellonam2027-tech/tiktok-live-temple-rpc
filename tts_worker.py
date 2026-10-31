@@ -36,7 +36,7 @@ for _stream in (sys.stdin, sys.stdout, sys.stderr):
         pass
 
 TARGET_RMS = 0.12  # mức âm lượng trung bình mong muốn của mỗi câu đọc
-CACHE_VERSION = "v5"  # đổi khi thay cách xử lý âm thanh để bỏ cache cũ
+CACHE_VERSION = "v6"  # đổi khi thay cách xử lý âm thanh để bỏ cache cũ
 
 CACHE_DIR = Path(__file__).resolve().parent / "data" / "tts-cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -145,8 +145,16 @@ def main() -> None:
 
     try:
         tts = ZeroTTS.from_pretrained(model_src, intra_op_num_threads=3)
+        # Giọng riêng (voice pack từ zeroweight.ai) đặt trong thư mục voices/<tên>/voice.npz
+        custom_dir = Path(__file__).resolve().parent / "voices"
+        if custom_dir.is_dir():
+            try:
+                tts.add_voices(custom_dir)
+            except Exception as exc:
+                emit({"type": "status", "status": "warn", "error": f"Không nạp được voices/: {exc}"})
         voices = tts.list_voices()
-        default_voice = "maichi" if "maichi" in voices else (voices[0] if voices else None)
+        wanted = (os.environ.get("TTS_DEFAULT_VOICE") or "thientam").strip().lower()
+        default_voice = wanted if wanted in voices else ("maichi" if "maichi" in voices else (voices[0] if voices else None))
         load_sec = round(time.time() - t0, 2)
         emit({
             "type": "ready",
@@ -175,8 +183,9 @@ def main() -> None:
             req_id = req.get("id")
             text = (req.get("text") or "").strip()
             voice = (req.get("voice") or "maichi").strip().lower()
-            if voice not in voices:
-                voice = "maichi"
+            # "maichi" là giá trị mặc định cũ mà giao diện luôn gửi -> dùng giọng mặc định đã chọn
+            if voice == "maichi" or voice not in voices:
+                voice = default_voice
 
             norm_text = clean_and_normalize_text(text)
             if not norm_text:
