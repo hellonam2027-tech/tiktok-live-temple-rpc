@@ -179,9 +179,12 @@ class ZeroTTSManager {
   }
 
   resolvePythonBin() {
-    const venvPy = path.join(__dirname, '.venv', 'bin', 'python');
+    const isWin = process.platform === 'win32';
+    const venvPy = isWin
+      ? path.join(__dirname, '.venv', 'Scripts', 'python.exe')
+      : path.join(__dirname, '.venv', 'bin', 'python');
     if (fs.existsSync(venvPy)) return venvPy;
-    return 'python3';
+    return isWin ? 'python' : 'python3';
   }
 
   startWorker() {
