@@ -409,7 +409,36 @@ class TempleAudioEngine {
         };
         const playPromise = audio.play();
         if (playPromise && typeof playPromise.catch === 'function') {
-          playPromise.catch(() => {
+          playPromise.catch((err) => {
+            if (err && err.name === 'NotAllowedError') {
+              // Trình duyệt chặn tự phát tiếng khi chưa có thao tác của người dùng.
+              // Báo rõ thay vì im lặng, rồi phát lại ngay khi người dùng bấm/nhấn phím.
+              console.warn('[ZeroTTS] Trình duyệt chặn tự phát âm thanh. Bấm vào trang để bật giọng đọc.');
+              this.showAudioBlockedHint();
+              const cleanup = () => {
+                window.removeEventListener('pointerdown', retry);
+                window.removeEventListener('keydown', retry);
+              };
+              const retry = () => {
+                cleanup();
+                audio.play().catch(() => {
+                  this.currentAudio = null;
+                  resolve();
+                });
+              };
+              window.addEventListener('pointerdown', retry, { once: true });
+              window.addEventListener('keydown', retry, { once: true });
+              // Không chặn hàng đợi mãi nếu không ai bấm: bỏ qua câu này sau 8 giây.
+              setTimeout(() => {
+                if (audio.paused) {
+                  cleanup();
+                  this.currentAudio = null;
+                  resolve();
+                }
+              }, 8000);
+              return;
+            }
+            console.warn('[ZeroTTS] Không phát được âm thanh:', err && err.message);
             this.currentAudio = null;
             resolve();
           });
@@ -418,6 +447,25 @@ class TempleAudioEngine {
         resolve();
       }
     });
+  }
+
+  showAudioBlockedHint() {
+    try {
+      // Chế độ OBS sạch (?obs=1) không hiện thông báo lên hình stream.
+      if (new URLSearchParams(window.location.search).has('obs')) return;
+      if (document.getElementById('audioBlockedHint')) return;
+      const el = document.createElement('div');
+      el.id = 'audioBlockedHint';
+      el.textContent = '🔊 Bấm vào trang để bật giọng đọc';
+      el.style.cssText =
+        'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:99999;' +
+        'padding:10px 18px;border-radius:999px;background:rgba(0,0,0,.8);color:#ffd36b;' +
+        'font:600 15px system-ui,sans-serif;pointer-events:none;box-shadow:0 2px 12px rgba(0,0,0,.4)';
+      document.body.appendChild(el);
+      const hide = () => el.remove();
+      window.addEventListener('pointerdown', hide, { once: true });
+      window.addEventListener('keydown', hide, { once: true });
+    } catch (_) {}
   }
 }
 
