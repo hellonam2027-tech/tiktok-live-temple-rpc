@@ -73,6 +73,14 @@ Mặc định server chạy tại cổng `3000`:
 
 ---
 
+## 🔒 Bảo Mật
+
+- Mặc định server chỉ lắng nghe `127.0.0.1` (chỉ máy anh truy cập được) và từ chối request từ origin lạ (không còn CORS `*`).
+- Muốn mở ra mạng ngoài: `HOST=0.0.0.0 RPC_TOKEN=<chuỗi-bí-mật-dài> bun start`. Nếu đặt `HOST` ra ngoài mà thiếu `RPC_TOKEN`, server từ chối khởi động.
+- Khi có `RPC_TOKEN`, `/rpc`, `/api/*`, `/admin` và `/ws` yêu cầu token qua `Authorization: Bearer <token>`, header `X-RPC-Token`, hoặc `?token=`.
+  Với trình duyệt/OBS: mở một lần `http://localhost:3000/admin?token=<token>` (hoặc `/?obs=1&token=<token>`) để lưu cookie HttpOnly, các lệnh gọi sau tự mang token.
+- Server không còn tự kết nối kênh mặc định. Đặt `TIKTOK_USER=@kênh_của_anh` hoặc gọi `live.connect`.
+
 ## 🎮 Bảng Quy Tắc Tương Tác TikTok Live
 
 | Sự kiện TikTok Live | Điều kiện / Từ khóa | Nghi thức trên Chánh Điện | Điểm Công Đức |

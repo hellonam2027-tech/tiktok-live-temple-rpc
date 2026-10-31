@@ -3,11 +3,71 @@ const http = require('http');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
-const cors = require('cors');
+const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 const { TikTokLiveConnection, WebcastEvent, ControlEvent } = require('tiktok-live-connector');
 
 const PORT = process.env.PORT || 3000;
+// --- Bảo mật ---------------------------------------------------------------
+// HOST mặc định chỉ lắng nghe loopback. Muốn mở ra mạng LAN/Internet thì đặt
+// HOST=0.0.0.0 VÀ bắt buộc đặt RPC_TOKEN (nếu không server sẽ từ chối khởi động).
+const HOST = process.env.HOST || '127.0.0.1';
+const RPC_TOKEN = process.env.RPC_TOKEN || '';
+const IS_LOOPBACK_HOST = ['127.0.0.1', '::1', 'localhost'].includes(HOST);
+if (!IS_LOOPBACK_HOST && !RPC_TOKEN) {
+  console.error(
+    `[BẢO MẬT] HOST=${HOST} mở server ra ngoài nhưng chưa đặt RPC_TOKEN. ` +
+      'Hãy đặt RPC_TOKEN=<chuỗi bí mật dài> hoặc dùng HOST=127.0.0.1.'
+  );
+  process.exit(1);
+}
+const COOKIE_NAME = 'temple_token';
+
+function safeEqual(a, b) {
+  const ba = Buffer.from(String(a || ''));
+  const bb = Buffer.from(String(b || ''));
+  if (ba.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ba, bb);
+}
+
+function parseCookies(header) {
+  const out = {};
+  for (const part of String(header || '').split(';')) {
+    const i = part.indexOf('=');
+    if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+  }
+  return out;
+}
+
+// Token có thể đến từ: header Authorization: Bearer, X-RPC-Token, ?token= hoặc cookie.
+function extractToken(req) {
+  const auth = req.headers['authorization'] || '';
+  if (/^Bearer\s+/i.test(auth)) return auth.replace(/^Bearer\s+/i, '').trim();
+  if (req.headers['x-rpc-token']) return String(req.headers['x-rpc-token']);
+  try {
+    const q = new URL(req.url, 'http://localhost').searchParams.get('token');
+    if (q) return q;
+  } catch (_) {}
+  return parseCookies(req.headers.cookie)[COOKIE_NAME] || '';
+}
+
+function isAuthorized(req) {
+  if (!RPC_TOKEN) return true; // chế độ local: không cần token
+  return safeEqual(extractToken(req), RPC_TOKEN);
+}
+
+// Chặn Cross-Site WebSocket Hijacking / CSRF: nếu có header Origin thì phải
+// trùng host đang được truy cập. Client không phải trình duyệt (curl, TikFinity)
+// không gửi Origin nên vẫn đi qua (và vẫn phải qua kiểm tra token nếu có).
+function isSameOrigin(req) {
+  const origin = req.headers['origin'];
+  if (!origin) return true;
+  try {
+    return new URL(origin).host === req.headers['host'];
+  } catch (_) {
+    return false;
+  }
+}
 const DATA_DIR = path.join(__dirname, 'data');
 const TTS_CACHE_DIR = path.join(DATA_DIR, 'tts-cache');
 const STATE_FILE = path.join(DATA_DIR, 'merit-state.json');
@@ -269,7 +329,7 @@ const DEFAULT_STATE = {
   tiktok: {
     connected: false,
     connecting: false,
-    username: 'zenfacts_vn',
+    username: '',
     roomId: null,
     viewerCount: 0,
     lastError: null
@@ -1094,17 +1154,44 @@ async function handleRpcCall(method, params = {}) {
 // 8. EXPRESS + WEBSOCKET SERVER
 // ============================================================================
 const app = express();
-app.use(cors());
-app.use(express.json({ limit: '2mb' }));
+app.disable('x-powered-by');
+
+// Không còn CORS mở '*': trình duyệt chỉ gọi được API từ chính origin của server.
+// Request từ origin khác bị từ chối (chặn trang web lạ gọi vào localhost của anh).
+app.use((req, res, next) => {
+  if (!isSameOrigin(req)) {
+    return res.status(403).json({ ok: false, error: 'Origin không được phép' });
+  }
+  next();
+});
+
+// Mở trang với ?token=... một lần để lưu cookie HttpOnly (dùng cho OBS/admin).
+app.use((req, res, next) => {
+  const q = typeof req.query.token === 'string' ? req.query.token : '';
+  if (RPC_TOKEN && q && safeEqual(q, RPC_TOKEN)) {
+    res.setHeader(
+      'Set-Cookie',
+      `${COOKIE_NAME}=${encodeURIComponent(q)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000`
+    );
+  }
+  next();
+});
+
+function requireAuth(req, res, next) {
+  if (isAuthorized(req)) return next();
+  res.status(401).json({ ok: false, error: 'Thiếu hoặc sai RPC_TOKEN' });
+}
+
+app.use(express.json({ limit: '256kb' }));
 app.use('/tts-cache', express.static(TTS_CACHE_DIR, { maxAge: '7d' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-app.get('/admin', (_req, res) => {
+app.get('/admin', requireAuth, (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'admin.html'));
 });
 
 // HTTP JSON-RPC 2.0 Endpoint
-app.post('/rpc', async (req, res) => {
+app.post('/rpc', requireAuth, async (req, res) => {
   const { jsonrpc, id, method, params } = req.body || {};
   if (!method) {
     return res.status(400).json({
@@ -1130,7 +1217,7 @@ app.post('/rpc', async (req, res) => {
 });
 
 // ZeroTTS HTTP Endpoint (Mai Chi default)
-app.all('/api/tts', async (req, res) => {
+app.all('/api/tts', requireAuth, async (req, res) => {
   const text = (req.body?.text || req.query?.text || '').trim();
   const voice = (req.body?.voice || req.query?.voice || state.settings.ttsVoice || 'maichi').trim();
   if (!text) {
@@ -1140,12 +1227,21 @@ app.all('/api/tts', async (req, res) => {
   res.json(result);
 });
 
-app.get('/api/state', (_req, res) => {
+app.get('/api/state', requireAuth, (_req, res) => {
   res.json(getPublicState());
 });
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: '/ws' });
+const wss = new WebSocketServer({
+  server,
+  path: '/ws',
+  maxPayload: 256 * 1024,
+  verifyClient: (info, done) => {
+    if (!isSameOrigin(info.req)) return done(false, 403, 'Origin không được phép');
+    if (!isAuthorized(info.req)) return done(false, 401, 'Thiếu hoặc sai RPC_TOKEN');
+    done(true);
+  }
+});
 
 function broadcastNotification(method, params) {
   const payload = JSON.stringify({
@@ -1204,16 +1300,18 @@ wss.on('connection', (ws) => {
 
 const zeroTts = new ZeroTTSManager();
 
-server.listen(PORT, () => {
+server.listen(PORT, HOST, () => {
   console.log(`============================================================`);
+  console.log(`🔒 Lắng nghe tại ${HOST}:${PORT} | Xác thực token: ${RPC_TOKEN ? 'BẬT' : 'TẮT (chỉ an toàn khi chạy local)'}`);
   console.log(`🪷 CHÙA ONLINE TIKTOK LIVE RPC ĐÃ KHỞI ĐỘNG`);
   console.log(`📺 Màn hình Live (9:16 OBS): http://localhost:${PORT}`);
   console.log(`🎛️ Bảng điều khiển RPC Admin: http://localhost:${PORT}/admin`);
   console.log(`🔌 JSON-RPC 2.0 Endpoint   : http://localhost:${PORT}/rpc (ws://localhost:${PORT}/ws)`);
   console.log(`============================================================`);
 
-  // Tự động kết nối tới @zenfacts_vn ngay khi khởi động server
-  const defaultChannel = process.env.TIKTOK_USER || state.tiktok?.username || 'zenfacts_vn';
+  // Chỉ tự kết nối khi anh đặt TIKTOK_USER hoặc đã từng kết nối kênh nào đó (lưu trong state).
+  // Không còn mặc định nghe kênh của tác giả gốc.
+  const defaultChannel = process.env.TIKTOK_USER || state.tiktok?.username || '';
   if (defaultChannel) {
     connectTikTokLive(defaultChannel).catch((err) => {
       console.warn(`[Auto-Connect @${defaultChannel}] Chưa kết nối được ngay:`, err.message);
