@@ -26,8 +26,17 @@ import numpy as np
 from zerotts import ZeroTTS, normalize_vi_text
 from zerotts.chunking import normalize_punctuation
 
+# Trên Windows, stdin/stdout mặc định dùng bảng mã ANSI của máy (cp1252, cp1258...), khiến
+# chữ tiếng Việt từ server bị giải mã sai (mất dấu / ký tự rác) trước khi vào mô hình.
+# Ép UTF-8 để worker không phụ thuộc cấu hình Windows.
+for _stream in (sys.stdin, sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 TARGET_RMS = 0.12  # mức âm lượng trung bình mong muốn của mỗi câu đọc
-CACHE_VERSION = "v4"  # đổi khi thay cách xử lý âm thanh để bỏ cache cũ
+CACHE_VERSION = "v5"  # đổi khi thay cách xử lý âm thanh để bỏ cache cũ
 
 CACHE_DIR = Path(__file__).resolve().parent / "data" / "tts-cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)

@@ -228,7 +228,9 @@ class ZeroTTSManager {
     this.status = 'loading';
     this.proc = spawn(pyBin, [scriptPath], {
       cwd: __dirname,
-      stdio: ['pipe', 'pipe', 'pipe']
+      stdio: ['pipe', 'pipe', 'pipe'],
+      // Ép Python dùng UTF-8 cho mọi luồng vào/ra, bất kể bảng mã Windows của máy.
+      env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }
     });
 
     this.proc.stdout.on('data', (chunk) => {
@@ -339,7 +341,14 @@ class ZeroTTSManager {
       }, 30000);
 
       this.pending.set(id, { resolve, timer });
-      const payload = JSON.stringify({ id, text: cleanText, voice }) + '\n';
+      // Gửi JSON thuần ASCII (chữ có dấu thành \uXXXX) để không phụ thuộc bảng mã của Windows:
+      // Python trên Windows đọc stdin bằng bảng mã ANSI của máy (cp1252/cp1258...), làm chữ tiếng Việt
+      // thành ký tự rác hoặc mất dấu trước khi vào mô hình (đọc loạn, sai chữ).
+      const payload =
+        JSON.stringify({ id, text: cleanText, voice }).replace(
+          /[\u007f-￿]/g,
+          (c) => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0')
+        ) + '\n';
       this.proc.stdin.write(payload);
     }).finally(() => {
       this.inflight.delete(dedupKey);
