@@ -74,6 +74,39 @@ const STATE_FILE = path.join(DATA_DIR, 'merit-state.json');
 
 fs.mkdirSync(TTS_CACHE_DIR, { recursive: true });
 
+// Dọn cache âm thanh TTS: mỗi câu khác nhau sinh 1 file WAV nên live dài giờ sẽ
+// phình mãi. Giữ tổng dung lượng dưới TTS_CACHE_MAX_MB (mặc định 300MB), xóa file cũ nhất trước.
+const TTS_CACHE_MAX_BYTES = (Number(process.env.TTS_CACHE_MAX_MB) || 300) * 1024 * 1024;
+async function pruneTtsCache() {
+  try {
+    const names = (await fs.promises.readdir(TTS_CACHE_DIR)).filter((n) => n.endsWith('.wav'));
+    const files = [];
+    let total = 0;
+    for (const name of names) {
+      try {
+        const full = path.join(TTS_CACHE_DIR, name);
+        const st = await fs.promises.stat(full);
+        files.push({ full, size: st.size, mtime: st.mtimeMs });
+        total += st.size;
+      } catch (_) {}
+    }
+    if (total <= TTS_CACHE_MAX_BYTES) return;
+    files.sort((a, b) => a.mtime - b.mtime);
+    for (const f of files) {
+      if (total <= TTS_CACHE_MAX_BYTES * 0.8) break;
+      try {
+        await fs.promises.unlink(f.full);
+        total -= f.size;
+      } catch (_) {}
+    }
+    console.log(`[TTS Cache] Đã dọn, còn ~${Math.round(total / 1024 / 1024)}MB`);
+  } catch (e) {
+    console.warn('[TTS Cache] Lỗi dọn cache:', e.message);
+  }
+}
+pruneTtsCache();
+setInterval(pruneTtsCache, 30 * 60 * 1000).unref();
+
 // ============================================================================
 // 1. BỘ 18 QUẺ LINH XĂM CHÙA LINH ỨNG (FORTUNE STICKS DECK)
 // ============================================================================
@@ -213,15 +246,32 @@ class ZeroTTSManager {
       if (msg) console.log(`[ZeroTTS stderr] ${msg}`);
     });
 
+    // Tránh crash cả server nếu ghi vào worker đã chết (EPIPE)
+    this.proc.stdin.on('error', () => {});
+    this.proc.on('error', (err) => {
+      console.warn('[ZeroTTS] Không chạy được worker:', err.message);
+    });
+
+    const startedAt = Date.now();
     this.proc.on('exit', (code) => {
       console.warn(`[ZeroTTS] Worker thoát với mã ${code}`);
       this.ready = false;
       this.status = 'stopped';
+      this.proc = null;
       for (const [, item] of this.pending) {
         clearTimeout(item.timer);
         item.resolve({ ok: false, error: 'ZeroTTS worker exited' });
       }
       this.pending.clear();
+
+      // Tự khởi động lại với backoff (5s → 10s → ... tối đa 60s) để live dài giờ
+      // không mất giọng đọc vĩnh viễn khi worker chết. Chạy ổn >60s thì reset backoff.
+      if (Date.now() - startedAt > 60000) this.restartDelayMs = 5000;
+      const delay = this.restartDelayMs || 5000;
+      this.restartDelayMs = Math.min(delay * 2, 60000);
+      console.warn(`[ZeroTTS] Sẽ khởi động lại sau ${Math.round(delay / 1000)}s...`);
+      clearTimeout(this.restartTimer);
+      this.restartTimer = setTimeout(() => this.startWorker(), delay);
     });
   }
 
