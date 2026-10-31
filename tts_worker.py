@@ -26,6 +26,9 @@ import numpy as np
 from zerotts import ZeroTTS, normalize_vi_text
 from zerotts.chunking import normalize_punctuation
 
+TARGET_RMS = 0.12  # mức âm lượng trung bình mong muốn của mỗi câu đọc
+CACHE_VERSION = "v4"  # đổi khi thay cách xử lý âm thanh để bỏ cache cũ
+
 CACHE_DIR = Path(__file__).resolve().parent / "data" / "tts-cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -96,9 +99,23 @@ def polish_waveform(wav: np.ndarray, sample_rate: int) -> np.ndarray:
 
     arr = arr - np.mean(arr)
 
+    # Lọc nhẹ tạp âm tần số cao (> 10 kHz) gây cảm giác rè/xước; giọng nói tiếng Việt
+    # gần như không có thông tin hữu ích ở dải này. Bỏ qua nếu thiếu scipy.
+    try:
+        from scipy.signal import butter, sosfiltfilt
+        cutoff = 10000.0
+        if sample_rate > 2.4 * cutoff and arr.size > 64:
+            sos = butter(4, cutoff / (sample_rate / 2.0), btype="low", output="sos")
+            arr = sosfiltfilt(sos, arr).astype(np.float32)
+    except Exception:
+        pass
+
+    # Cân bằng âm lượng giữa các câu (trước đây rms chênh nhau gần 6 dB), vẫn giữ đỉnh <= 0.90.
+    rms = float(np.sqrt(np.mean(arr * arr)))
     peak = float(np.max(np.abs(arr)))
-    if peak > 0.90:
-        arr = arr * (0.90 / peak)
+    if rms > 1e-5 and peak > 1e-5:
+        gain = min(TARGET_RMS / rms, 0.90 / peak)
+        arr = arr * gain
 
     fade_in = min(int(sample_rate * 0.012), arr.size // 4)
     fade_out = min(int(sample_rate * 0.020), arr.size // 4)
@@ -157,7 +174,7 @@ def main() -> None:
                 emit({"type": "result", "id": req_id, "ok": False, "error": "Filtered empty/spam text"})
                 continue
 
-            cache_key = hashlib.sha1(f"v3::{voice}::{norm_text}".encode("utf-8")).hexdigest()[:20]
+            cache_key = hashlib.sha1(f"{CACHE_VERSION}::{voice}::{norm_text}".encode("utf-8")).hexdigest()[:20]
             out_name = f"{voice}_{cache_key}.wav"
             out_path = CACHE_DIR / out_name
 

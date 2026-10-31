@@ -462,6 +462,26 @@ function isBlockedSpamOrToxic(raw) {
   return false;
 }
 
+// Máy đọc ZeroTTS chỉ đọc tốt tiếng Việt. Tên TikTok kiểu "Finn", "2k5", "user8841276"
+// bị đọc loạn nên chỉ đọc những từ có dạng âm tiết tiếng Việt, còn lại thay bằng "hữu duyên".
+const VI_DIACRITIC_RE = /[àáâãèéêìíòóôõùúýăđĩũơưạ-ỹ]/i;
+const VI_SYLLABLE_RE = /^(ngh|ng|nh|ch|gh|gi|kh|ph|qu|th|tr|[bcdghklmnpqrstvx])?(ieu|oai|oay|uai|uay|uoi|uyen|ai|ao|au|ay|eo|eu|ia|iu|oa|oe|oi|ua|ui|uy|uo|ie|[aeiouy])(ch|ng|nh|c|m|n|p|t)?$/i;
+function isReadableViWord(w) {
+  if (!w || w.length > 8) return false;
+  if (/\d/.test(w)) return false;
+  if (VI_DIACRITIC_RE.test(w)) return true;
+  return VI_SYLLABLE_RE.test(w);
+}
+function spokenName(name, fallback = 'hữu duyên') {
+  const words = String(name || '')
+    .replace(/^\s*thí\s+chủ\s+/i, '')
+    .split(/[\s._-]+/)
+    .filter(Boolean)
+    .filter(isReadableViWord)
+    .slice(0, 4);
+  return words.length ? words.join(' ') : fallback;
+}
+
 function sanitizeUserName(rawName) {
   const normalized = String(rawName || '')
     .normalize('NFKC')
@@ -580,7 +600,7 @@ const Rituals = {
 
     const ttsText = params.readTts === false
       ? ''
-      : `Nam mô A Di Đà Phật. Cảm tạ thí chủ ${devotee.name} đã thành tâm thắp ${count} nén hương thơm. ${wish}.`;
+      : `Nam mô A Di Đà Phật. Cảm tạ thí chủ ${spokenName(devotee.name)} đã thành tâm thắp ${count} nén hương thơm. ${wish}.`;
 
     const event = pushEventLog({
       type: 'burnIncense',
@@ -636,7 +656,7 @@ const Rituals = {
     const devotee = recordDevotee(user, uniqueId, avatar, merit, 0, 0, wish);
 
     const ttsText = params.readTts
-      ? `Thí chủ ${devotee.name} thỉnh Đại Hồng Chung cầu nguyện: ${wish}.`
+      ? `Thí chủ ${spokenName(devotee.name)} thỉnh Đại Hồng Chung cầu nguyện: ${wish}.`
       : '';
 
     const event = pushEventLog({
@@ -668,7 +688,7 @@ const Rituals = {
 
     const ttsText = params.readTts === false
       ? ''
-      : `Lời cầu nguyện của thí chủ ${devotee.name}: ${wish}. Nam mô A Di Đà Phật.`;
+      : `Lời cầu nguyện của thí chủ ${spokenName(devotee.name)}: ${wish}. Nam mô A Di Đà Phật.`;
 
     const event = pushEventLog({
       type: 'sendPrayer',
@@ -714,7 +734,7 @@ const Rituals = {
 
     const ttsText = params.readTts === false
       ? ''
-      : `Công đức vô lượng! Cảm tạ thí chủ ${devotee.name} đã phát tâm dâng cúng ${giftName}, tích thêm ${merit} điểm công đức. Nguyện cầu chư Phật gia hộ cho thí chủ vạn sự cát tường như ý.`;
+      : `Công đức vô lượng! Cảm tạ thí chủ ${spokenName(devotee.name)} đã phát tâm dâng cúng ${spokenName(giftName, 'lễ vật quý')}, tích thêm ${merit} điểm công đức. Nguyện cầu chư Phật gia hộ cho thí chủ vạn sự cát tường như ý.`;
 
     const event = pushEventLog({
       type: giftType === 'dragon' ? 'grandCeremony' : 'offerGift',
@@ -748,7 +768,7 @@ const Rituals = {
 
     const ttsText = params.readTts === false
       ? ''
-      : `Thí chủ ${devotee.name} vừa gieo được ${fortune.ttsSummary}`;
+      : `Thí chủ ${spokenName(devotee.name)} vừa gieo được ${fortune.ttsSummary}`;
 
     const event = pushEventLog({
       type: 'drawFortune',
