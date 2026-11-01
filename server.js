@@ -540,6 +540,59 @@ function shouldThankLike(userKey) {
   return true;
 }
 
+// Chào người mới vào phòng: đọc tên + một lời chúc. Mỗi người chỉ chào 1 lần / 20 phút,
+// toàn phòng tối đa 1 lần / 7 giây (phòng đông, người vào dồn dập).
+const welcomedUsers = new Map();
+let lastWelcomeAt = 0;
+function shouldWelcome(userKey) {
+  const now = Date.now();
+  if (now - lastWelcomeAt < 7000) return false;
+  if (userKey && now - (welcomedUsers.get(userKey) || 0) < 20 * 60 * 1000) return false;
+  lastWelcomeAt = now;
+  if (userKey) {
+    welcomedUsers.set(userKey, now);
+    if (welcomedUsers.size > 1000) welcomedUsers.delete(welcomedUsers.keys().next().value);
+  }
+  return true;
+}
+
+// Lời tốt đẹp / lời mời tương tác, đọc xen kẽ khi phòng im lặng.
+const IDLE_MESSAGES = [
+  'Nam mô A Di Đà Phật. Chúc quý thí chủ trong phòng một ngày bình an, tâm an thân khỏe.',
+  'Mỗi một lời nói thiện lành, mỗi một việc làm tốt đẹp đều gieo thêm phước báu. Chúc quý vị luôn an vui.',
+  'Nếu thấy lòng được an yên, mời quý vị thả tim ủng hộ để gõ một nhịp mõ cầu bình an cho cả phòng.',
+  'Quý vị có thể bình luận thắp hương, cầu bình an hoặc xin xăm để được đọc tên và gửi lời chúc.',
+  'Sống hiền lành, biết ơn và buông bớt phiền não là phước lớn nhất. Nam mô A Di Đà Phật.',
+  'Mời quý vị thả tim để cùng gõ mõ, hồi hướng công đức cho gia đình và người thân.',
+  'Chúc gia đình quý vị luôn hòa thuận, tài lộc hanh thông, vạn sự như ý.',
+  'Hãy hít thở thật chậm, để tâm được lắng lại. Cầu cho chúng sinh bớt khổ, bớt lo.'
+];
+let idleMsgIdx = -1;
+let lastIdleAt = 0;
+function startIdleBlessings() {
+  const IDLE_AFTER_MS = Number(process.env.IDLE_AFTER_SEC || 90) * 1000;
+  const IDLE_EVERY_MS = Number(process.env.IDLE_EVERY_SEC || 150) * 1000;
+  setInterval(() => {
+    // Chỉ nói khi đang nối với phòng live thật và đã im lặng đủ lâu
+    if (!state.tiktok?.connected || !state.settings.ttsEnabled) return;
+    const now = Date.now();
+    if (now - lastActivityAt < IDLE_AFTER_MS || now - lastIdleAt < IDLE_EVERY_MS) return;
+    lastIdleAt = now;
+    do {
+      idleMsgIdx = Math.floor(Math.random() * IDLE_MESSAGES.length);
+    } while (IDLE_MESSAGES.length > 1 && IDLE_MESSAGES[idleMsgIdx] === lastIdleText);
+    lastIdleText = IDLE_MESSAGES[idleMsgIdx];
+    const event = pushEventLog({
+      type: 'idleBlessing',
+      user: 'Chùa Online',
+      ttsText: lastIdleText,
+      ttsVoice: state.settings.ttsVoice || 'maichi'
+    });
+    broadcastNotification('temple.event', { event, state: getPublicState() });
+  }, 15000).unref();
+}
+let lastIdleText = '';
+
 function sanitizeUserName(rawName) {
   const normalized = String(rawName || '')
     .normalize('NFKC')
@@ -608,12 +661,16 @@ function recordDevotee(user, uniqueId, avatar, meritDelta, incenseDelta = 0, gif
   return dev;
 }
 
+let lastActivityAt = Date.now();
 function pushEventLog(evt) {
   const entry = {
     id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
     timestamp: new Date().toISOString(),
     ...evt
   };
+  if (entry.type !== 'idleBlessing' && entry.type !== 'welcome') {
+    lastActivityAt = Date.now();
+  }
   state.recentEvents.unshift(entry);
   if (state.recentEvents.length > 35) {
     state.recentEvents.length = 35;
@@ -1083,6 +1140,17 @@ async function connectTikTokLive(usernameOrUrl) {
   tiktokConn.on(WebcastEvent.MEMBER, (data) => {
     const { user, uniqueId, avatar } = extractUserFromEvent(data);
     recordDevotee(user, uniqueId, avatar, 1, 0, 0, 'Đã vào Chánh Điện lễ Phật');
+    if (state.settings.ttsEnabled && shouldWelcome(uniqueId || user)) {
+      const event = pushEventLog({
+        type: 'welcome',
+        user: sanitizeUserName(user),
+        uniqueId,
+        avatar,
+        ttsText: `Chào mừng thí chủ ${spokenName(sanitizeUserName(user))} đã ghé thăm chùa. ${pickBlessing()}`,
+        ttsVoice: state.settings.ttsVoice || 'maichi'
+      });
+      broadcastNotification('temple.event', { event, state: getPublicState() });
+    }
     broadcastNotification('temple.state', getPublicState());
   });
 
@@ -1434,6 +1502,7 @@ wss.on('connection', (ws) => {
 
 const zeroTts = new ZeroTTSManager();
 
+startIdleBlessings();
 server.listen(PORT, HOST, () => {
   console.log(`============================================================`);
   console.log(`🔒 Lắng nghe tại ${HOST}:${PORT} | Xác thực token: ${RPC_TOKEN ? 'BẬT' : 'TẮT (chỉ an toàn khi chạy local)'}`);

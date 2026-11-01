@@ -466,6 +466,10 @@
       case 'offerGift':
       case 'grandCeremony':
         return `🪷 <strong>${escapeHtml(ev.user)}</strong> dâng <em>${escapeHtml(ev.giftName)}</em> (+${ev.merit} CĐ)`;
+      case 'welcome':
+        return `🙏 <strong>${escapeHtml(ev.user)}</strong> vừa ghé thăm chùa`;
+      case 'idleBlessing':
+        return `🪷 Lời chúc phúc từ Chùa Online`;
       case 'drawFortune':
         return `🎋 <strong>${escapeHtml(ev.user)}</strong> gieo được Quẻ số ${ev.fortune?.number} (${ev.fortune?.rank})`;
       default:
