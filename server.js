@@ -491,6 +491,55 @@ function spokenName(name, fallback = 'hữu duyên') {
   return words.length ? words.join(' ') : fallback;
 }
 
+// Lời chúc phúc đọc kèm lời cảm ơn khi người xem tặng quà hoặc thả tim (chọn ngẫu nhiên, không lặp liền nhau).
+const THANK_BLESSINGS = [
+  'Nguyện cho thí chủ cùng gia đình luôn bình an, mạnh khỏe.',
+  'Cầu chư Phật gia hộ cho thí chủ vạn sự cát tường như ý.',
+  'Nguyện cho tài lộc hanh thông, phước lành đầy nhà.',
+  'Nguyện cho thí chủ tâm luôn an lạc, gặp nhiều may mắn.',
+  'Cầu cho gia đạo êm ấm, công việc thuận buồm xuôi gió.',
+  'Nguyện cho mọi điều lành tìm đến thí chủ.',
+  'Nam mô A Di Đà Phật, chúc thí chủ phước báu vô lượng.',
+  'Nguyện cho thí chủ thân tâm thường an lạc, vạn sự viên thành.'
+];
+// Tên quà phổ biến của TikTok -> cách đọc tiếng Việt (quà không có trong bảng thì đọc "lễ vật quý").
+const GIFT_SPOKEN = [
+  [/rose|hoa hồng/i, 'đóa hoa hồng'],
+  [/finger heart|heart me|hearts?\b|trái tim|tim/i, 'trái tim thiện lành'],
+  [/lotus|sen/i, 'đóa hoa sen'],
+  [/lamp|đèn/i, 'chiếc đèn cúng dường'],
+  [/fruit|quả/i, 'mâm quả cúng dường']
+];
+function spokenGiftName(giftName) {
+  const raw = String(giftName || '');
+  const hit = GIFT_SPOKEN.find(([re]) => re.test(raw));
+  return hit ? hit[1] : spokenName(raw.replace(/^\d+\s*x\s*/i, ''), 'lễ vật quý');
+}
+let lastBlessingIdx = -1;
+function pickBlessing() {
+  let i;
+  do {
+    i = Math.floor(Math.random() * THANK_BLESSINGS.length);
+  } while (i === lastBlessingIdx && THANK_BLESSINGS.length > 1);
+  lastBlessingIdx = i;
+  return THANK_BLESSINGS[i];
+}
+
+// Chống đọc cảm ơn tim quá dày: mỗi người tối đa 1 lần / 60 giây, toàn phòng tối đa 1 lần / 8 giây.
+const likeThanksByUser = new Map();
+let lastLikeThanksAt = 0;
+function shouldThankLike(userKey) {
+  const now = Date.now();
+  if (now - lastLikeThanksAt < 8000) return false;
+  if (userKey && now - (likeThanksByUser.get(userKey) || 0) < 60000) return false;
+  lastLikeThanksAt = now;
+  if (userKey) {
+    likeThanksByUser.set(userKey, now);
+    if (likeThanksByUser.size > 500) likeThanksByUser.delete(likeThanksByUser.keys().next().value);
+  }
+  return true;
+}
+
 function sanitizeUserName(rawName) {
   const normalized = String(rawName || '')
     .normalize('NFKC')
@@ -743,7 +792,7 @@ const Rituals = {
 
     const ttsText = params.readTts === false
       ? ''
-      : `Công đức vô lượng! Cảm tạ thí chủ ${spokenName(devotee.name)} đã phát tâm dâng cúng ${spokenName(giftName, 'lễ vật quý')}, tích thêm ${merit} điểm công đức. Nguyện cầu chư Phật gia hộ cho thí chủ vạn sự cát tường như ý.`;
+      : `Cảm tạ thí chủ ${spokenName(devotee.name)} đã phát tâm dâng cúng ${spokenGiftName(giftName)}. ${pickBlessing()}`;
 
     const event = pushEventLog({
       type: giftType === 'dragon' ? 'grandCeremony' : 'offerGift',
@@ -1047,7 +1096,10 @@ async function connectTikTokLive(usernameOrUrl) {
   tiktokConn.on(WebcastEvent.LIKE, (data) => {
     const { user, uniqueId, avatar } = extractUserFromEvent(data);
     const likeCount = Math.min(15, Math.max(1, Number(data?.count ?? data?.likeCount ?? 1)));
-    Rituals.strikeWoodenFish({ user, uniqueId, avatar, count: likeCount });
+    const thanksText = shouldThankLike(uniqueId || user)
+      ? `Cảm tạ thí chủ ${spokenName(sanitizeUserName(user))} đã thả tim ủng hộ. ${pickBlessing()}`
+      : '';
+    Rituals.strikeWoodenFish({ user, uniqueId, avatar, count: likeCount, ttsText: thanksText });
   });
 
   const handleSocialEvent = (data) => {
