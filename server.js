@@ -530,8 +530,8 @@ const likeThanksByUser = new Map();
 let lastLikeThanksAt = 0;
 function shouldThankLike(userKey) {
   const now = Date.now();
-  if (now - lastLikeThanksAt < 8000) return false;
-  if (userKey && now - (likeThanksByUser.get(userKey) || 0) < 60000) return false;
+  if (now - lastLikeThanksAt < 5000) return false;
+  if (userKey && now - (likeThanksByUser.get(userKey) || 0) < 45000) return false;
   lastLikeThanksAt = now;
   if (userKey) {
     likeThanksByUser.set(userKey, now);
@@ -546,7 +546,7 @@ const welcomedUsers = new Map();
 let lastWelcomeAt = 0;
 function shouldWelcome(userKey) {
   const now = Date.now();
-  if (now - lastWelcomeAt < 7000) return false;
+  if (now - lastWelcomeAt < 4000) return false;
   if (userKey && now - (welcomedUsers.get(userKey) || 0) < 20 * 60 * 1000) return false;
   lastWelcomeAt = now;
   if (userKey) {
@@ -570,8 +570,8 @@ const IDLE_MESSAGES = [
 let idleMsgIdx = -1;
 let lastIdleAt = 0;
 function startIdleBlessings() {
-  const IDLE_AFTER_MS = Number(process.env.IDLE_AFTER_SEC || 90) * 1000;
-  const IDLE_EVERY_MS = Number(process.env.IDLE_EVERY_SEC || 150) * 1000;
+  const IDLE_AFTER_MS = Number(process.env.IDLE_AFTER_SEC || 45) * 1000;
+  const IDLE_EVERY_MS = Number(process.env.IDLE_EVERY_SEC || 75) * 1000;
   setInterval(() => {
     // Chỉ nói khi đang nối với phòng live thật và đã im lặng đủ lâu
     if (!state.tiktok?.connected || !state.settings.ttsEnabled) return;
@@ -770,9 +770,11 @@ const Rituals = {
     state.bellRings += count;
     const devotee = recordDevotee(user, uniqueId, avatar, merit, 0, 0, wish);
 
-    const ttsText = params.readTts
-      ? `Thí chủ ${spokenName(devotee.name)} thỉnh Đại Hồng Chung cầu nguyện: ${wish}.`
-      : '';
+    const ttsText = params.ttsText
+      ? params.ttsText
+      : params.readTts
+        ? `Thí chủ ${spokenName(devotee.name)} thỉnh Đại Hồng Chung cầu nguyện: ${wish}.`
+        : '';
 
     const event = pushEventLog({
       type: 'ringBell',
@@ -1170,24 +1172,42 @@ async function connectTikTokLive(usernameOrUrl) {
     Rituals.strikeWoodenFish({ user, uniqueId, avatar, count: likeCount, ttsText: thanksText });
   });
 
-  const handleSocialEvent = (data) => {
+  // Theo dõi / chia sẻ: cảm ơn theo tên kèm lời chúc (mỗi người 1 lần / 60s, toàn phòng 1 lần / 4s)
+  const socialThanksByUser = new Map();
+  let lastSocialThanksAt = 0;
+  const makeSocialHandler = (kind) => (data) => {
     const { user, uniqueId, avatar } = extractUserFromEvent(data);
+    const now = Date.now();
+    const key = `${kind}:${uniqueId || user}`;
+    let ttsText = '';
+    if (now - lastSocialThanksAt >= 4000 && now - (socialThanksByUser.get(key) || 0) >= 60000) {
+      lastSocialThanksAt = now;
+      socialThanksByUser.set(key, now);
+      if (socialThanksByUser.size > 500) socialThanksByUser.delete(socialThanksByUser.keys().next().value);
+      const name = spokenName(sanitizeUserName(user));
+      ttsText = kind === 'share'
+        ? `Cảm tạ thí chủ ${name} đã chia sẻ buổi lễ, lan tỏa điều lành đến mọi người. ${pickBlessing()}`
+        : `Cảm tạ thí chủ ${name} đã theo dõi chùa, hữu duyên kết thiện duyên. ${pickBlessing()}`;
+    }
     Rituals.ringBell({
       user,
       uniqueId,
       avatar,
       count: 1,
       wish: 'Hữu duyên tương ngộ nơi cửa Phật, cầu bình an may mắn',
-      readTts: false
+      readTts: false,
+      ttsText
     });
   };
-  tiktokConn.on(WebcastEvent.FOLLOW, handleSocialEvent);
-  tiktokConn.on(WebcastEvent.SHARE, handleSocialEvent);
+  tiktokConn.on(WebcastEvent.FOLLOW, makeSocialHandler('follow'));
+  tiktokConn.on(WebcastEvent.SHARE, makeSocialHandler('share'));
   tiktokConn.on(WebcastEvent.SOCIAL, (data) => {
     const action = String(data?.action || '');
     const disp = String(data?.common?.displayText?.displayType || data?.displayType || '').toLowerCase();
-    if (action === '1' || action === '3' || disp.includes('follow') || disp.includes('share')) {
-      handleSocialEvent(data);
+    if (disp.includes('share') || action === '3') {
+      makeSocialHandler('share')(data);
+    } else if (disp.includes('follow') || action === '1') {
+      makeSocialHandler('follow')(data);
     }
   });
 
