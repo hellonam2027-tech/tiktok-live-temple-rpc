@@ -476,15 +476,15 @@ function isBlockedSpamOrToxic(raw) {
 const VI_DIACRITIC_RE = /[àáâãèéêìíòóôõùúýăđĩũơưạ-ỹ]/i;
 const VI_SYLLABLE_RE = /^(ngh|ng|nh|ch|gh|gi|kh|ph|qu|th|tr|[bcdghklmnpqrstvx])?(ieu|oai|oay|uai|uay|uoi|uyen|ai|ao|au|ay|eo|eu|ia|iu|oa|oe|oi|ua|ui|uy|uo|ie|[aeiouy])(ch|ng|nh|c|m|n|p|t)?$/i;
 function isReadableViWord(w) {
-  if (!w || w.length > 8) return false;
-  if (/\d/.test(w)) return false;
-  if (VI_DIACRITIC_RE.test(w)) return true;
-  return VI_SYLLABLE_RE.test(w);
+  if (!w || w.length < 2 || w.length > 20) return false;
+  return /^[A-Za-zÀ-ỹĂăĐđĨĩŨũƠơƯư]+$/.test(w);
 }
 function spokenName(name, fallback = 'hữu duyên') {
   const words = String(name || '')
     .replace(/^\s*thí\s+chủ\s+/i, '')
     .split(/[\s._-]+/)
+    .filter((w) => !/^user\d+$/i.test(w)) // tên mặc định của TikTok kiểu user8841276: không đọc
+    .map((w) => w.replace(/\d+/g, ''))
     .filter(Boolean)
     .filter(isReadableViWord)
     .slice(0, 4);
@@ -715,7 +715,11 @@ const Rituals = {
 
     const ttsText = params.readTts === false
       ? ''
-      : `Nam mô A Di Đà Phật. Cảm tạ thí chủ ${spokenName(devotee.name)} đã thành tâm thắp ${count} nén hương thơm. ${wish}.`;
+      : `Nam mô A Di Đà Phật. Cảm tạ thí chủ ${spokenName(devotee.name)} đã thành tâm thắp ${count} nén hương thơm.${
+          /^(thắp hương|thap huong|dâng hương|dang huong|bái phật|bai phat|lạy phật|lay phat)$/i.test(wish.trim())
+            ? ` ${pickBlessing()}`
+            : ` ${wish}.`
+        }`;
 
     const event = pushEventLog({
       type: 'burnIncense',
@@ -947,6 +951,29 @@ const Rituals = {
 // 5. TIKTOK LIVE CONNECTOR & COMMENT PARSER
 // ============================================================================
 let tiktokConn = null;
+// Tự nối lại khi live bị ngắt, hoặc khi phòng cũ đã kết thúc và anh bật phòng mới (roomId đổi).
+let tiktokWantedUser = '';
+let tiktokIntentionalStop = false;
+let tiktokReconnectTimer = null;
+let tiktokReconnectDelayMs = 20000;
+let lastTikTokEventAt = Date.now();
+function touchTikTokEvent() {
+  lastTikTokEventAt = Date.now();
+}
+function scheduleTikTokReconnect(reason) {
+  if (tiktokIntentionalStop || !tiktokWantedUser || tiktokReconnectTimer) return;
+  const delay = tiktokReconnectDelayMs;
+  tiktokReconnectDelayMs = Math.min(tiktokReconnectDelayMs * 2, 180000);
+  console.warn(`[TikTok Live] ${reason}. Tự nối lại sau ${Math.round(delay / 1000)} giây...`);
+  tiktokReconnectTimer = setTimeout(() => {
+    tiktokReconnectTimer = null;
+    if (tiktokIntentionalStop) return;
+    connectTikTokLive(tiktokWantedUser).catch((err) => {
+      console.warn('[TikTok Live] Nối lại chưa được:', err.message);
+    });
+  }, delay);
+  tiktokReconnectTimer.unref?.();
+}
 
 const commentCooldownMap = new Map();
 
@@ -1086,8 +1113,15 @@ async function connectTikTokLive(usernameOrUrl) {
     throw new Error('Không tìm thấy @username hợp lệ từ dữ liệu nhập vào');
   }
 
+  tiktokWantedUser = cleanUser;
+  tiktokIntentionalStop = false;
+  if (tiktokReconnectTimer) {
+    clearTimeout(tiktokReconnectTimer);
+    tiktokReconnectTimer = null;
+  }
   if (tiktokConn) {
     try {
+      tiktokConn.removeAllListeners?.();
       await tiktokConn.disconnect();
     } catch (_) {}
     tiktokConn = null;
@@ -1114,6 +1148,8 @@ async function connectTikTokLive(usernameOrUrl) {
     state.tiktok.connecting = false;
     state.tiktok.roomId = roomState?.roomId || tiktokConn?.roomId || null;
     state.tiktok.lastError = null;
+    tiktokReconnectDelayMs = 20000;
+    touchTikTokEvent();
     console.log(`[TikTok Live] Đã kết nối phòng @${cleanUser} (roomId: ${state.tiktok.roomId})`);
     broadcastNotification('temple.state', getPublicState());
   });
@@ -1123,7 +1159,23 @@ async function connectTikTokLive(usernameOrUrl) {
     state.tiktok.connecting = false;
     console.log(`[TikTok Live] Đã ngắt kết nối @${cleanUser}`);
     broadcastNotification('temple.state', getPublicState());
+    scheduleTikTokReconnect('Live bị ngắt');
   });
+
+  if (WebcastEvent.STREAM_END) {
+    tiktokConn.on(WebcastEvent.STREAM_END, () => {
+      console.log(`[TikTok Live] Phòng @${cleanUser} đã kết thúc live`);
+      state.tiktok.connected = false;
+      broadcastNotification('temple.state', getPublicState());
+      scheduleTikTokReconnect('Live đã kết thúc');
+    });
+  }
+  for (const evName of [
+    WebcastEvent.ROOM_USER, WebcastEvent.MEMBER, WebcastEvent.CHAT, WebcastEvent.LIKE,
+    WebcastEvent.GIFT, WebcastEvent.FOLLOW, WebcastEvent.SHARE, WebcastEvent.SOCIAL
+  ]) {
+    if (evName) tiktokConn.on(evName, touchTikTokEvent);
+  }
 
   tiktokConn.on(ControlEvent.ERROR, (err) => {
     state.tiktok.lastError = err?.message || String(err);
@@ -1259,11 +1311,17 @@ async function connectTikTokLive(usernameOrUrl) {
     state.tiktok.connecting = false;
     state.tiktok.lastError = err?.message || 'Không thể kết nối phòng Live (kiểm tra tài khoản đang phát Live chưa)';
     broadcastNotification('temple.state', getPublicState());
+    scheduleTikTokReconnect('Nối live thất bại');
     throw new Error(state.tiktok.lastError);
   }
 }
 
 function disconnectTikTokLive() {
+  tiktokIntentionalStop = true;
+  if (tiktokReconnectTimer) {
+    clearTimeout(tiktokReconnectTimer);
+    tiktokReconnectTimer = null;
+  }
   if (tiktokConn) {
     try {
       tiktokConn.disconnect();
@@ -1521,6 +1579,18 @@ wss.on('connection', (ws) => {
 });
 
 const zeroTts = new ZeroTTSManager();
+
+// Canh chừng: nếu đã "kết nối" nhưng 4 phút không có tín hiệu nào từ TikTok thì phòng đã cũ -> nối lại phòng mới.
+setInterval(() => {
+  if (!tiktokIntentionalStop && tiktokWantedUser && state.tiktok?.connected &&
+      Date.now() - lastTikTokEventAt > 240000) {
+    console.warn('[TikTok Live] 4 phút không có tín hiệu, nối lại để lấy phòng live mới...');
+    lastTikTokEventAt = Date.now();
+    connectTikTokLive(tiktokWantedUser).catch((err) => {
+      console.warn('[TikTok Live] Nối lại chưa được:', err.message);
+    });
+  }
+}, 60000).unref();
 
 startIdleBlessings();
 server.listen(PORT, HOST, () => {
