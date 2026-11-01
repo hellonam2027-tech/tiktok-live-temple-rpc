@@ -473,6 +473,21 @@
     }
   }
 
+  // Hào quang bùng sáng quanh tượng Phật khi có quà (grand = Đại Lễ, sáng lâu và rộng hơn)
+  function glowStatue(grand) {
+    const el = document.getElementById('statueGlow');
+    if (!el) return;
+    el.classList.remove('on', 'grand');
+    void el.offsetWidth; // khởi động lại animation nếu đang chạy
+    el.classList.add('on');
+    if (grand) el.classList.add('grand');
+    const haloSys = document.getElementById('buddhaHaloSystem');
+    if (haloSys) {
+      haloSys.classList.add('flare');
+      setTimeout(() => haloSys.classList.remove('flare'), grand ? 6500 : 4200);
+    }
+  }
+
   // 7. Xử lý hiệu ứng khi có Nghi Thức mới
   let fortuneTimer = null;
   let grandTimer = null;
@@ -518,6 +533,7 @@
       }
 
       case 'offerGift': {
+        glowStatue(false);
         audio.playIncenseChime();
         audio.playTempleBell(0.85);
         particles.spawnIncenseBurst(540, 895);
@@ -527,6 +543,7 @@
       }
 
       case 'grandCeremony': {
+        glowStatue(true);
         audio.playTempleBell(1.2);
         setTimeout(() => audio.playTempleBell(1.1), 900);
         particles.spawnGrandCeremonyRain();
