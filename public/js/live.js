@@ -10,6 +10,13 @@
   if (params.get('obs') === '1') {
     document.body.classList.add('obs-mode');
   }
+  if (params.get('scene') === '3d') {
+    document.body.classList.add('scene-3d');
+    import('/js/hall3d.js').catch((e) => {
+      console.error('Hall3D lỗi, quay về cảnh 2D', e);
+      document.body.classList.remove('scene-3d');
+    });
+  }
 
   // 1. Tự động co giãn khung 1080x1920 vừa khít Stage Wrapper (9:16)
   const stageWrapper = document.getElementById('stageWrapper');
@@ -360,6 +367,7 @@
 
   function updateUIState(st) {
     if (!st) return;
+    window.Hall3D?.syncState(st);
 
     document.getElementById('statIncense').textContent = Number(st.totalIncense || 0).toLocaleString('vi-VN');
     document.getElementById('statMerit').textContent = Number(st.totalMerit || 0).toLocaleString('vi-VN');
@@ -498,6 +506,7 @@
 
   function triggerRitualVisuals(ev) {
     if (!ev) return;
+    window.Hall3D?.onEvent(ev);
 
     if (ev.ttsText && ev.type !== 'drawFortune') {
       audio.enqueueTts(ev.ttsText, { voice: ev.ttsVoice || 'maichi' });
